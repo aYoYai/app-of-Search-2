@@ -1,1 +1,533 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>検索&クイズ学習アプリ</title>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body>
+  <div id="root"></div>
+  <import React, { useState, useEffect } from 'react';
+import { Search, History, BookOpen, Settings, Eye, EyeOff, ChevronDown, ChevronUp, Award, X } from 'lucide-react';
 
+const SearchQuizApp = () => {
+  const [apiKey, setApiKey] = useState('');
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResult, setSearchResult] = useState(null);
+  const [isSearching, setIsSearching] = useState(false);
+  const [searchHistory, setSearchHistory] = useState([]);
+  const [activeTab, setActiveTab] = useState('search');
+  const [selectedQuiz, setSelectedQuiz] = useState(null);
+  const [quizAnswer, setQuizAnswer] = useState(null);
+  const [showExplanation, setShowExplanation] = useState(false);
+  const [expandedResult, setExpandedResult] = useState(null);
+  const [score, setScore] = useState({ correct: 0, total: 0 });
+
+  // Load data from storage
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  const loadData = async () => {
+    try {
+      const [historyResult, scoreResult, keyResult] = await Promise.all([
+        window.storage.get('search-history').catch(() => null),
+        window.storage.get('quiz-score').catch(() => null),
+        window.storage.get('api-key').catch(() => null)
+      ]);
+
+      if (historyResult?.value) {
+        setSearchHistory(JSON.parse(historyResult.value));
+      }
+      if (scoreResult?.value) {
+        setScore(JSON.parse(scoreResult.value));
+      }
+      if (keyResult?.value) {
+        setApiKey(keyResult.value);
+      }
+    } catch (error) {
+      console.error('Failed to load data:', error);
+    }
+  };
+
+  const saveApiKey = async (key) => {
+    try {
+      await window.storage.set('api-key', key);
+    } catch (error) {
+      console.error('Failed to save API key:', error);
+    }
+  };
+
+  const saveSearchHistory = async (history) => {
+    try {
+      await window.storage.set('search-history', JSON.stringify(history));
+    } catch (error) {
+      console.error('Failed to save search history:', error);
+    }
+  };
+
+  const saveScore = async (newScore) => {
+    try {
+      await window.storage.set('quiz-score', JSON.stringify(newScore));
+    } catch (error) {
+      console.error('Failed to save score:', error);
+    }
+  };
+
+  const handleSearch = async () => {
+    if (!searchQuery.trim() || !apiKey.trim()) {
+      alert('検索キーワードとAPIキーを入力してください');
+      return;
+    }
+
+    setIsSearching(true);
+    setSearchResult(null);
+
+    try {
+      // Call Google AI Studio API
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            parts: [{
+              text: `「${searchQuery}」について、以下の形式で情報を提供してください:
+
+1. 【概要】(300文字以内で簡潔に説明)
+2. 【詳細説明】(詳しい説明、800文字程度)
+3. 【クイズ問題】(「${searchQuery}」という言葉を使わずに60文字程度で説明する文)
+4. 【選択肢A】
+5. 【選択肢B】
+6. 【選択肢C】  
+7. 【選択肢D】
+8. 【正解】(A/B/C/Dのいずれか)
+9. 【解説】(なぜそれが正解なのか、他の選択肢が間違っている理由を200文字程度で説明)
+
+クイズの選択肢は、正解1つと間違い3つを用意してください。間違いの選択肢は、もっともらしいが誤りである内容にしてください。`
+            }]
+          }]
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error('API request failed');
+      }
+
+      const data = await response.json();
+      const text = data.candidates[0].content.parts[0].text;
+
+      // Parse the response
+      const summaryMatch = text.match(/【概要】\s*([^【]+)/);
+      const detailMatch = text.match(/【詳細説明】\s*([^【]+)/);
+      const questionMatch = text.match(/【クイズ問題】\s*([^【]+)/);
+      const optionAMatch = text.match(/【選択肢A】\s*([^【]+)/);
+      const optionBMatch = text.match(/【選択肢B】\s*([^【]+)/);
+      const optionCMatch = text.match(/【選択肢C】\s*([^【]+)/);
+      const optionDMatch = text.match(/【選択肢D】\s*([^【]+)/);
+      const answerMatch = text.match(/【正解】\s*([ABCD])/);
+      const explanationMatch = text.match(/【解説】\s*([^【]+)/);
+
+      const result = {
+        id: Date.now(),
+        query: searchQuery,
+        timestamp: new Date().toISOString(),
+        summary: summaryMatch ? summaryMatch[1].trim().substring(0, 300) : '要約を生成できませんでした',
+        fullText: detailMatch ? detailMatch[1].trim() : text,
+        quiz: {
+          question: questionMatch ? questionMatch[1].trim() : '',
+          options: [
+            optionAMatch ? optionAMatch[1].trim() : '',
+            optionBMatch ? optionBMatch[1].trim() : '',
+            optionCMatch ? optionCMatch[1].trim() : '',
+            optionDMatch ? optionDMatch[1].trim() : ''
+          ],
+          correctAnswer: answerMatch ? answerMatch[1].trim() : 'A',
+          explanation: explanationMatch ? explanationMatch[1].trim() : ''
+        }
+      };
+
+      setSearchResult(result);
+
+      // Save to history
+      const newHistory = [result, ...searchHistory].slice(0, 50);
+      setSearchHistory(newHistory);
+      await saveSearchHistory(newHistory);
+
+    } catch (error) {
+      console.error('Search error:', error);
+      alert('検索に失敗しました。APIキーが正しいか確認してください。');
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  const handleQuizAnswer = async (answer) => {
+    if (!selectedQuiz) return;
+
+    const isCorrect = answer === selectedQuiz.quiz.correctAnswer;
+    setQuizAnswer(answer);
+    setShowExplanation(true);
+
+    const newScore = {
+      correct: score.correct + (isCorrect ? 1 : 0),
+      total: score.total + 1
+    };
+    setScore(newScore);
+    await saveScore(newScore);
+  };
+
+  const resetQuiz = () => {
+    setQuizAnswer(null);
+    setShowExplanation(false);
+  };
+
+  const clearHistory = async () => {
+    if (confirm('検索履歴を全て削除しますか?')) {
+      setSearchHistory([]);
+      await saveSearchHistory([]);
+    }
+  };
+
+  const handleApiKeyChange = (e) => {
+    const newKey = e.target.value;
+    setApiKey(newKey);
+    saveApiKey(newKey);
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
+      <div className="max-w-6xl mx-auto p-4">
+        {/* Header */}
+        <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
+          <h1 className="text-3xl font-bold text-indigo-600 mb-2">🎓 検索&クイズ学習アプリ</h1>
+          <p className="text-gray-600">検索して学び、クイズで知識を確認しよう!</p>
+          
+          {/* Score Display */}
+          {score.total > 0 && (
+            <div className="mt-4 flex items-center gap-2 text-sm">
+              <Award className="w-5 h-5 text-yellow-500" />
+              <span className="font-semibold">正答率: {Math.round((score.correct / score.total) * 100)}%</span>
+              <span className="text-gray-600">({score.correct}/{score.total}問正解)</span>
+            </div>
+          )}
+        </div>
+
+        {/* Tabs */}
+        <div className="bg-white rounded-lg shadow-lg mb-6">
+          <div className="flex border-b">
+            <button
+              onClick={() => setActiveTab('search')}
+              className={`flex-1 flex items-center justify-center gap-2 p-4 font-semibold transition ${
+                activeTab === 'search' 
+                  ? 'text-indigo-600 border-b-2 border-indigo-600' 
+                  : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              <Search className="w-5 h-5" />
+              検索
+            </button>
+            <button
+              onClick={() => setActiveTab('quiz')}
+              className={`flex-1 flex items-center justify-center gap-2 p-4 font-semibold transition ${
+                activeTab === 'quiz' 
+                  ? 'text-indigo-600 border-b-2 border-indigo-600' 
+                  : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              <BookOpen className="w-5 h-5" />
+              クイズ
+            </button>
+            <button
+              onClick={() => setActiveTab('history')}
+              className={`flex-1 flex items-center justify-center gap-2 p-4 font-semibold transition ${
+                activeTab === 'history' 
+                  ? 'text-indigo-600 border-b-2 border-indigo-600' 
+                  : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              <History className="w-5 h-5" />
+              履歴
+            </button>
+            <button
+              onClick={() => setActiveTab('settings')}
+              className={`flex-1 flex items-center justify-center gap-2 p-4 font-semibold transition ${
+                activeTab === 'settings' 
+                  ? 'text-indigo-600 border-b-2 border-indigo-600' 
+                  : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              <Settings className="w-5 h-5" />
+              設定
+            </button>
+          </div>
+
+          <div className="p-6">
+            {/* Search Tab */}
+            {activeTab === 'search' && (
+              <div>
+                <div className="flex gap-2 mb-6">
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
+                    placeholder="検索キーワードを入力..."
+                    className="flex-1 p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                  <button
+                    onClick={handleSearch}
+                    disabled={isSearching || !apiKey}
+                    className="px-6 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition flex items-center gap-2"
+                  >
+                    <Search className="w-5 h-5" />
+                    {isSearching ? '検索中...' : '検索'}
+                  </button>
+                </div>
+
+                {!apiKey && (
+                  <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-4">
+                    <p className="text-yellow-800">⚠️ APIキーを設定してください(設定タブ)</p>
+                  </div>
+                )}
+
+                {searchResult && (
+                  <div className="bg-gradient-to-r from-indigo-50 to-purple-50 rounded-lg p-6 border border-indigo-200">
+                    <h3 className="text-xl font-bold text-indigo-900 mb-3">
+                      検索結果: {searchResult.query}
+                    </h3>
+                    
+                    <div className="bg-white rounded-lg p-4 mb-4">
+                      <h4 className="font-semibold text-indigo-600 mb-2">📝 要約 (300文字以内)</h4>
+                      <p className="text-gray-700 leading-relaxed">{searchResult.summary}</p>
+                    </div>
+
+                    <div className="bg-white rounded-lg p-4">
+                      <button
+                        onClick={() => setExpandedResult(expandedResult === searchResult.id ? null : searchResult.id)}
+                        className="flex items-center gap-2 font-semibold text-indigo-600 hover:text-indigo-800 mb-2"
+                      >
+                        {expandedResult === searchResult.id ? <ChevronUp className="w-5 h-5" /> : <ChevronDown className="w-5 h-5" />}
+                        詳細説明を表示
+                      </button>
+                      
+                      {expandedResult === searchResult.id && (
+                        <div className="mt-3 p-4 bg-gray-50 rounded border border-gray-200">
+                          <p className="text-gray-700 leading-relaxed whitespace-pre-wrap">{searchResult.fullText}</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Quiz Tab */}
+            {activeTab === 'quiz' && (
+              <div>
+                {searchHistory.length === 0 ? (
+                  <div className="text-center py-12">
+                    <BookOpen className="w-16 h-16 text-gray-400 mx-auto mb-4" />
+                    <p className="text-gray-600">まだ検索履歴がありません</p>
+                    <p className="text-gray-500 text-sm mt-2">検索してクイズを生成しましょう!</p>
+                  </div>
+                ) : !selectedQuiz ? (
+                  <div className="grid gap-4">
+                    <h3 className="text-lg font-semibold text-gray-800 mb-2">クイズを選択してください</h3>
+                    {searchHistory.map((item) => (
+                      <button
+                        key={item.id}
+                        onClick={() => {
+                          setSelectedQuiz(item);
+                          resetQuiz();
+                        }}
+                        className="p-4 bg-gradient-to-r from-indigo-50 to-purple-50 rounded-lg border border-indigo-200 hover:border-indigo-400 transition text-left"
+                      >
+                        <div className="font-semibold text-indigo-900">{item.query}</div>
+                        <div className="text-sm text-gray-600 mt-1">
+                          {new Date(item.timestamp).toLocaleString('ja-JP')}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <div>
+                    <button
+                      onClick={() => setSelectedQuiz(null)}
+                      className="mb-4 text-indigo-600 hover:text-indigo-800 flex items-center gap-1"
+                    >
+                      ← クイズ一覧に戻る
+                    </button>
+
+                    <div className="bg-gradient-to-r from-indigo-50 to-purple-50 rounded-lg p-6 border border-indigo-200">
+                      <h3 className="text-xl font-bold text-indigo-900 mb-4">
+                        クイズ問題
+                      </h3>
+                      
+                      <div className="bg-white rounded-lg p-5 mb-6">
+                        <p className="text-lg text-gray-800 leading-relaxed">
+                          {selectedQuiz.quiz.question}
+                        </p>
+                      </div>
+
+                      <div className="space-y-3">
+                        {['A', 'B', 'C', 'D'].map((letter, index) => (
+                          <button
+                            key={letter}
+                            onClick={() => handleQuizAnswer(letter)}
+                            disabled={quizAnswer !== null}
+                            className={`w-full p-4 rounded-lg border-2 text-left transition ${
+                              quizAnswer === null
+                                ? 'border-gray-300 bg-white hover:border-indigo-400 hover:bg-indigo-50'
+                                : quizAnswer === letter
+                                ? letter === selectedQuiz.quiz.correctAnswer
+                                  ? 'border-green-500 bg-green-50'
+                                  : 'border-red-500 bg-red-50'
+                                : letter === selectedQuiz.quiz.correctAnswer
+                                ? 'border-green-500 bg-green-50'
+                                : 'border-gray-300 bg-gray-50'
+                            } disabled:cursor-not-allowed`}
+                          >
+                            <span className="font-bold text-indigo-600 mr-2">{letter}.</span>
+                            <span className="text-gray-800">{selectedQuiz.quiz.options[index]}</span>
+                          </button>
+                        ))}
+                      </div>
+
+                      {showExplanation && (
+                        <div className={`mt-6 p-5 rounded-lg ${
+                          quizAnswer === selectedQuiz.quiz.correctAnswer
+                            ? 'bg-green-50 border-2 border-green-500'
+                            : 'bg-red-50 border-2 border-red-500'
+                        }`}>
+                          <h4 className="font-bold text-lg mb-2">
+                            {quizAnswer === selectedQuiz.quiz.correctAnswer ? '🎉 正解!' : '❌ 不正解'}
+                          </h4>
+                          <p className="text-gray-700 mb-3">
+                            <strong>正解:</strong> {selectedQuiz.quiz.correctAnswer}
+                          </p>
+                          <div className="bg-white rounded p-4">
+                            <h5 className="font-semibold text-gray-800 mb-2">📖 解説</h5>
+                            <p className="text-gray-700 leading-relaxed">{selectedQuiz.quiz.explanation}</p>
+                          </div>
+                          
+                          <button
+                            onClick={() => setSelectedQuiz(null)}
+                            className="mt-4 px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition"
+                          >
+                            次のクイズへ
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* History Tab */}
+            {activeTab === 'history' && (
+              <div>
+                <div className="flex justify-between items-center mb-4">
+                  <h3 className="text-lg font-semibold text-gray-800">検索履歴</h3>
+                  {searchHistory.length > 0 && (
+                    <button
+                      onClick={clearHistory}
+                      className="px-4 py-2 text-red-600 hover:bg-red-50 rounded-lg transition flex items-center gap-1"
+                    >
+                      <X className="w-4 h-4" />
+                      全削除
+                    </button>
+                  )}
+                </div>
+
+                {searchHistory.length === 0 ? (
+                  <div className="text-center py-12">
+                    <History className="w-16 h-16 text-gray-400 mx-auto mb-4" />
+                    <p className="text-gray-600">まだ検索履歴がありません</p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {searchHistory.map((item) => (
+                      <div key={item.id} className="bg-white rounded-lg p-4 border border-gray-200">
+                        <div className="flex justify-between items-start mb-2">
+                          <h4 className="font-semibold text-indigo-900">{item.query}</h4>
+                          <span className="text-sm text-gray-500">
+                            {new Date(item.timestamp).toLocaleString('ja-JP')}
+                          </span>
+                        </div>
+                        <p className="text-gray-700 text-sm">{item.summary}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Settings Tab */}
+            {activeTab === 'settings' && (
+              <div>
+                <h3 className="text-lg font-semibold text-gray-800 mb-4">API設定</h3>
+                
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
+                  <h4 className="font-semibold text-blue-900 mb-2">📌 Google AI Studio APIキーの取得方法</h4>
+                  <ol className="text-sm text-blue-800 space-y-1 list-decimal list-inside">
+                    <li><a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="underline">Google AI Studio</a>にアクセス</li>
+                    <li>「Create API Key」をクリック</li>
+                    <li>生成されたAPIキーをコピーして下に貼り付け</li>
+                  </ol>
+                </div>
+
+                <div className="mb-4">
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                    Google AI Studio APIキー
+                  </label>
+                  <div className="relative">
+                    <input
+                      type={showApiKey ? 'text' : 'password'}
+                      value={apiKey}
+                      onChange={handleApiKeyChange}
+                      placeholder="AIza..."
+                      className="w-full p-3 pr-12 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                    <button
+                      onClick={() => setShowApiKey(!showApiKey)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-700"
+                    >
+                      {showApiKey ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                    </button>
+                  </div>
+                  <p className="text-xs text-gray-500 mt-2">
+                    ⚠️ APIキーはブラウザにのみ保存され、外部に送信されません
+                  </p>
+                </div>
+
+                <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                  <h4 className="font-semibold text-green-900 mb-2">🔒 セキュリティについて</h4>
+                  <ul className="text-sm text-green-800 space-y-1">
+                    <li>• APIキーはあなたのブラウザ内にのみ保存されます</li>
+                    <li>• GitHub上のコードにAPIキーは含まれません</li>
+                    <li>• APIリクエストは直接Google APIに送信されます</li>
+                    <li>• 第三者があなたのAPIキーにアクセスすることはできません</li>
+                  </ul>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="text-center text-gray-600 text-sm">
+          <p>🔐 すべてのデータはあなたのブラウザに安全に保存されます</p>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default SearchQuizApp;>
+</body>
+</html>
