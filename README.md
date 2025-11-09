@@ -204,7 +204,6 @@ npm run deploy
 ![GitHub Forks](https://img.shields.io/github/forks/YOUR_USERNAME/app-of-Search-2?style=social)
 ![GitHub Issues](https://img.shields.io/github/issues/YOUR_USERNAME/app-of-Search-2)
 
-
 <!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -236,6 +235,14 @@ npm run deploy
                 this.userAnswer = null;
                 this.showExplanation = false;
                 this.expandedResults = {};
+                
+                // 複数のAPIエンドポイントを試す
+                this.apiEndpoints = [
+                    'https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent',
+                    'https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent',
+                    'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent',
+                    'https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent'
+                ];
                 
                 this.init();
             }
@@ -279,6 +286,76 @@ npm run deploy
                 }
             }
 
+            async callGeminiAPI(prompt) {
+                let lastError = null;
+                
+                // 複数のエンドポイントを順番に試す
+                for (const endpoint of this.apiEndpoints) {
+                    try {
+                        console.log('Trying endpoint:', endpoint);
+                        
+                        const response = await fetch(`${endpoint}?key=${this.apiKey}`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                contents: [{
+                                    parts: [{ text: prompt }]
+                                }],
+                                generationConfig: {
+                                    temperature: 0.7,
+                                    maxOutputTokens: 2048,
+                                }
+                            })
+                        });
+
+                        const data = await response.json();
+                        console.log('API Response:', data);
+
+                        // エラーチェック
+                        if (!response.ok) {
+                            console.warn(`Endpoint ${endpoint} failed:`, data);
+                            lastError = new Error(data.error?.message || `HTTP ${response.status}`);
+                            continue;
+                        }
+
+                        // レスポンス構造の確認（複数のパターンに対応）
+                        let resultText = null;
+                        
+                        // パターン1: candidates[0].content.parts[0].text
+                        if (data.candidates?.[0]?.content?.parts?.[0]?.text) {
+                            resultText = data.candidates[0].content.parts[0].text;
+                        }
+                        // パターン2: candidates[0].output
+                        else if (data.candidates?.[0]?.output) {
+                            resultText = data.candidates[0].output;
+                        }
+                        // パターン3: text フィールド直接
+                        else if (data.text) {
+                            resultText = data.text;
+                        }
+                        // パターン4: content フィールド
+                        else if (data.content) {
+                            resultText = data.content;
+                        }
+
+                        if (resultText) {
+                            console.log('Success with endpoint:', endpoint);
+                            return resultText;
+                        }
+
+                        console.warn(`Unexpected response structure from ${endpoint}:`, data);
+                        lastError = new Error('レスポンスの形式が不正です');
+                        
+                    } catch (error) {
+                        console.warn(`Error with endpoint ${endpoint}:`, error);
+                        lastError = error;
+                    }
+                }
+
+                // すべてのエンドポイントが失敗
+                throw lastError || new Error('すべてのAPIエンドポイントで失敗しました');
+            }
+
             async performSearch() {
                 const input = document.getElementById('searchInput');
                 this.searchQuery = input.value.trim();
@@ -291,102 +368,79 @@ npm run deploy
 
                 try {
                     // 検索と要約
-                    const searchPrompt = `以下の検索クエリについて、Web検索を行い、検索結果を300文字以内で要約してください。また、検索結果の全文も提供してください。
+                    const searchPrompt = `以下の検索クエリについて、詳しく調べて回答してください。
 
 検索クエリ: ${this.searchQuery}
 
-以下のJSON形式で回答してください:
+以下の2つを必ず含めてください:
+1. 300文字以内の簡潔な要約
+2. 詳細な説明（できるだけ詳しく）
+
+以下のJSON形式で必ず回答してください:
 {
-  "summary": "300文字以内の要約",
-  "fullText": "検索結果の全文(できるだけ詳細に)"
+  "summary": "ここに300文字以内の要約",
+  "fullText": "ここに詳細な説明"
 }`;
 
-                    const response = await fetch(
-                        `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${this.apiKey}`,
-                        {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                contents: [{ parts: [{ text: searchPrompt }] }]
-                            })
-                        }
-                    );
-
-                    if (!response.ok) {
-                        const errorData = await response.json();
-                        throw new Error(`API Error: ${errorData.error?.message || 'Unknown error'}`);
-                    }
-
-                    const data = await response.json();
-                    
-                    // レスポンスの検証
-                    if (!data.candidates || !data.candidates[0] || !data.candidates[0].content || !data.candidates[0].content.parts || !data.candidates[0].content.parts[0]) {
-                        console.error('Invalid API response:', data);
-                        throw new Error('APIレスポンスの形式が不正です。APIキーが正しいか確認してください。');
-                    }
-
-                    const resultText = data.candidates[0].content.parts[0].text;
+                    console.log('Searching for:', this.searchQuery);
+                    const resultText = await this.callGeminiAPI(searchPrompt);
                     
                     let parsedResult;
                     try {
+                        // JSONを抽出
                         const jsonMatch = resultText.match(/\{[\s\S]*\}/);
-                        parsedResult = jsonMatch ? JSON.parse(jsonMatch[0]) : {
-                            summary: resultText.substring(0, 300),
-                            fullText: resultText
-                        };
-                    } catch {
+                        if (jsonMatch) {
+                            parsedResult = JSON.parse(jsonMatch[0]);
+                        } else {
+                            // JSONが見つからない場合は、テキストをそのまま使用
+                            const text = resultText.trim();
+                            parsedResult = {
+                                summary: text.substring(0, 300),
+                                fullText: text
+                            };
+                        }
+                    } catch (e) {
+                        console.warn('JSON parsing failed, using raw text:', e);
                         parsedResult = {
                             summary: resultText.substring(0, 300),
                             fullText: resultText
                         };
                     }
 
+                    console.log('Parsed result:', parsedResult);
+
                     // クイズ生成
-                    const quizPrompt = `以下の検索クエリと検索結果から、4択クイズを作成してください。
+                    const quizPrompt = `以下の情報から4択クイズを作成してください。
 
 検索クエリ: ${this.searchQuery}
-検索結果: ${parsedResult.summary}
+説明: ${parsedResult.summary}
 
-重要な制約:
-1. 問題文では検索クエリ「${this.searchQuery}」を60文字程度で説明する文章を作成してください
-2. 問題文に「${this.searchQuery}」という単語を絶対に含めないでください
-3. 正解は検索クエリ「${this.searchQuery}」とし、他の3つは関連するが間違った選択肢にしてください
-4. 解説は検索結果に基づいて教育的で分かりやすい内容にしてください
+重要なルール:
+1. 問題文は「${this.searchQuery}」を60文字程度で説明する文章にしてください
+2. 問題文に「${this.searchQuery}」という単語自体は絶対に含めないでください
+3. 正解の選択肢は「${this.searchQuery}」にしてください
+4. 他の3つの選択肢は間違いで、でも関連する言葉にしてください
+5. 解説は教育的でわかりやすく書いてください
 
-以下のJSON形式で回答してください:
+必ず以下のJSON形式で回答してください:
 {
-  "question": "検索クエリを説明する問題文(60文字程度、検索クエリの単語を含まない)",
-  "options": ["${this.searchQuery}", "選択肢2", "選択肢3", "選択肢4"],
+  "question": "問題文（60文字程度）",
+  "options": ["${this.searchQuery}", "間違い選択肢1", "間違い選択肢2", "間違い選択肢3"],
   "correctAnswer": 0,
   "explanation": "解説文"
 }`;
 
-                    const quizResponse = await fetch(
-                        `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${this.apiKey}`,
-                        {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                contents: [{ parts: [{ text: quizPrompt }] }]
-                            })
-                        }
-                    );
-
                     let quiz = null;
-                    if (quizResponse.ok) {
-                        const quizData = await quizResponse.json();
-                        
-                        if (quizData.candidates && quizData.candidates[0] && quizData.candidates[0].content && quizData.candidates[0].content.parts && quizData.candidates[0].content.parts[0]) {
-                            const quizText = quizData.candidates[0].content.parts[0].text;
-                            
-                            try {
-                                const quizJsonMatch = quizText.match(/\{[\s\S]*\}/);
-                                quiz = quizJsonMatch ? JSON.parse(quizJsonMatch[0]) : null;
-                            } catch (e) {
-                                console.warn('クイズの解析に失敗しました:', e);
-                                quiz = null;
-                            }
+                    try {
+                        console.log('Generating quiz...');
+                        const quizText = await this.callGeminiAPI(quizPrompt);
+                        const quizJsonMatch = quizText.match(/\{[\s\S]*\}/);
+                        if (quizJsonMatch) {
+                            quiz = JSON.parse(quizJsonMatch[0]);
+                            console.log('Quiz generated:', quiz);
                         }
+                    } catch (e) {
+                        console.warn('Quiz generation failed:', e);
                     }
 
                     const newResult = {
@@ -402,10 +456,23 @@ npm run deploy
                     this.searchHistory.unshift(newResult);
                     localStorage.setItem('search_history', JSON.stringify(this.searchHistory));
                     
+                    console.log('Search completed successfully');
                     this.render();
+                    
                 } catch (error) {
                     console.error('Search error:', error);
-                    alert('検索エラーが発生しました: ' + error.message + '\n\nAPIキーが正しいか確認してください。');
+                    let errorMessage = '検索エラーが発生しました: ' + error.message;
+                    
+                    if (error.message.includes('API key') || error.message.includes('401')) {
+                        errorMessage += '\n\n❌ APIキーが無効です。以下を確認してください:\n';
+                        errorMessage += '1. Google AI Studio (https://makersuite.google.com/app/apikey) でAPIキーを取得\n';
+                        errorMessage += '2. APIキーを正しくコピーしているか確認\n';
+                        errorMessage += '3. APIキーが有効化されているか確認';
+                    } else if (error.message.includes('quota') || error.message.includes('429')) {
+                        errorMessage += '\n\n❌ API利用制限に達しました。しばらく待ってから再試行してください。';
+                    }
+                    
+                    alert(errorMessage);
                 } finally {
                     searchBtn.disabled = false;
                     searchBtn.innerHTML = '🔍 検索';
@@ -468,7 +535,7 @@ npm run deploy
                             <input
                                 id="apiKeyInput"
                                 type="password"
-                                placeholder="APIキーを入力"
+                                placeholder="AIzaSy... で始まるAPIキーを入力"
                                 class="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:border-purple-500 focus:outline-none mb-4"
                             />
                             <button
@@ -477,23 +544,23 @@ npm run deploy
                             >
                                 開始
                             </button>
-                            <p class="text-xs text-gray-500 mt-4 text-center">
-                                APIキーはブラウザのローカルストレージに保存されます
-                            </p>
                             <div class="mt-6 p-4 bg-blue-50 rounded-lg">
-                                <p class="text-xs text-gray-700 mb-2">
-                                    <strong>APIキーの取得方法:</strong>
+                                <p class="text-sm font-semibold text-gray-700 mb-2">
+                                    📝 APIキーの取得方法:
                                 </p>
-                                <ol class="text-xs text-gray-600 list-decimal list-inside space-y-1">
-                                    <li>Google AI Studioにアクセス</li>
+                                <ol class="text-sm text-gray-600 list-decimal list-inside space-y-1">
+                                    <li>下のリンクをクリック</li>
                                     <li>Googleアカウントでログイン</li>
-                                    <li>「Get API Key」をクリック</li>
-                                    <li>APIキーをコピーして貼り付け</li>
+                                    <li>「Create API Key」をクリック</li>
+                                    <li>APIキーをコピーして上に貼り付け</li>
                                 </ol>
-                                <a href="https://makersuite.google.com/app/apikey" target="_blank" class="text-xs text-purple-600 hover:underline mt-2 inline-block">
-                                    → Google AI Studioを開く
+                                <a href="https://aistudio.google.com/app/apikey" target="_blank" class="inline-block mt-3 text-sm text-white bg-purple-600 hover:bg-purple-700 px-4 py-2 rounded-lg transition">
+                                    🔗 Google AI Studioを開く
                                 </a>
                             </div>
+                            <p class="text-xs text-gray-500 mt-4 text-center">
+                                APIキーはブラウザのローカルストレージにのみ保存されます
+                            </p>
                         </div>
                     </div>
                 `;
@@ -519,7 +586,7 @@ npm run deploy
                                     <input
                                         id="searchInput"
                                         type="text"
-                                        placeholder="検索クエリを入力..."
+                                        placeholder="検索クエリを入力... (例: 人工知能、量子コンピュータ)"
                                         class="flex-1 px-4 py-3 border-2 border-gray-200 rounded-lg focus:border-purple-500 focus:outline-none"
                                         onkeypress="if(event.key==='Enter') app.performSearch()"
                                     />
@@ -759,7 +826,6 @@ npm run deploy
             }
 
             attachEventListeners() {
-                // Enter key support for API key input
                 const apiKeyInput = document.getElementById('apiKeyInput');
                 if (apiKeyInput) {
                     apiKeyInput.addEventListener('keypress', (e) => {
@@ -773,7 +839,6 @@ npm run deploy
     </script>
 </body>
 </html>
-
 ---
 
 ⭐ このプロジェクトが役立ったら、スターをお願いします!
